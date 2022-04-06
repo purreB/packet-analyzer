@@ -6,6 +6,8 @@ from scapy.layers.inet import IP, TCP
 from scapy.layers.l2 import Ether
 from scapy.utils import RawPcapReader
 
+from timeFunction import printable_timestamp
+
 
 def process_pcap(file_name):
     print("Opening {}...".format(file_name))
@@ -56,14 +58,32 @@ def process_pcap(file_name):
             # If the destination port is not our server port or client port it is not interesting for us.
             continue
 
-
         interesting_pkt_count += 1
+        if interesting_pkt_count == 1:
+            first_pkt_timestamp = (pkt_metadata.tshigh <<
+                                   32) | pkt_metadata.tslow
+            first_pkt_timestamp_resolution = pkt_metadata.tsresol
+            first_pkt_ordinal = count
+
+        last_pkt_timestamp = (pkt_metadata.tshigh << 32) | pkt_metadata.tslow
+        last_pkt_timestamp_resolution = pkt_metadata.tsresol
+        last_pkt_ordinal = count
 
     print(
         "{} contains {} packets ({} interesting)".format(
             file_name, count, interesting_pkt_count
         )
     )
+
+    print(
+        'First packet in connection: Packet #{} {}'
+        .format(first_pkt_ordinal, printable_timestamp(first_pkt_timestamp, first_pkt_timestamp_resolution))
+    )
+
+    print('Last packet in connection: Packet #{} {}'.format(
+        last_pkt_ordinal, printable_timestamp(
+            last_pkt_timestamp, last_pkt_timestamp_resolution)
+    ))
 
 
 if __name__ == "__main__":
