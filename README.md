@@ -1,4 +1,4 @@
-# packet-analyzer
+# packet-analyzer-WORK-IN-PROGRESS
 A packet analyzer built in Python for analyzing recorded / intercepted network traffic on a client.
 This can be useful when you do not have accsess to a GUI such as wireshark or otherwise just want to programmatically process a pcap file.
 
