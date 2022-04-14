@@ -2,12 +2,19 @@ import argparse
 import os
 import sys
 
+
 from scapy.layers.inet import IP, TCP
 from scapy.layers.l2 import Ether
 from scapy.utils import RawPcapReader
 
 from timeFunction import printable_timestamp
 
+from enum import Enum
+
+class PktDirection(Enum):
+    not_defined = 0
+    client_to_server = 1
+    server_to_client = 2
 
 def process_pcap(file_name):
     print("Opening {}...".format(file_name))
@@ -20,6 +27,9 @@ def process_pcap(file_name):
 
     count = 0
     interesting_pkt_count = 0
+
+    server_sequence_offset = None
+    client_sequence_offset = None
     for (
         pkt_data,
         pkt_metadata,
@@ -28,6 +38,7 @@ def process_pcap(file_name):
         ether_pkt = Ether(pkt_data)
         if "type" not in ether_pkt.fields:
             continue
+
         if ether_pkt.type != 0x0800:
             # EtherType 0x0800 is IPV4 packets, which to us is not interesting right now.
             # Other EtherTypes that you might want to filter out can be found in: https://en.wikipedia.org/wiki/EtherType
@@ -40,22 +51,28 @@ def process_pcap(file_name):
             # Ignore non-TCP packet
             continue
 
-        if (ip_pkt.src != server_ip) and (ip_pkt.src != client_ip):
-            # If the ip source of the packet is not our server ip or our client ip it is not interesting for us.
-            continue
-
-        if (ip_pkt.dst != server_ip) and (ip_pkt.dst != client_ip):
-            # If the destination ip of the packet is not our server or our clients ip adress it is not interesting for us.
-            continue
-
         tcp_pkt = ip_pkt[TCP]
 
-        if (tcp_pkt.sport != int(server_port)) and (tcp_pkt.sport != int(client_port)):
-            # If the source port is not our server port or client port it is not interesting for us.
-            continue
+        direction = PktDirection.not_defined
 
-        if (tcp_pkt.dport != int(server_port)) and (tcp_pkt.dport != int(client_port)):
-            # If the destination port is not our server port or client port it is not interesting for us.
+        if ip_pkt.src == client_ip:
+            if tcp_pkt.sport != int(client_port):
+                continue
+            if ip_pkt.dst != server_ip:
+                continue
+            if tcp_pkt.dport != int(server_port):
+                continue
+            direction = PktDirection.client_to_server
+
+        elif ip_pkt.src == server_ip:
+            if tcp_pkt.sport != int(server_port):
+                continue
+            if ip_pkt.dst != client_ip:
+                continue
+            if tcp_pkt.dport != int(client_port):
+                continue
+            direction = PktDirection.server_to_client
+        else:
             continue
 
         interesting_pkt_count += 1
@@ -68,6 +85,54 @@ def process_pcap(file_name):
         last_pkt_timestamp = (pkt_metadata.tshigh << 32) | pkt_metadata.tslow
         last_pkt_timestamp_resolution = pkt_metadata.tsresol
         last_pkt_ordinal = count
+
+        this_pkt_relative_timestamp = last_pkt_timestamp - first_pkt_timestamp
+
+        if direction == PktDirection.client_to_server:
+            if client_sequence_offset is None:
+                client_sequence_offset = tcp_pkt.seq
+            relative_offset_seq = tcp_pkt.seq - client_sequence_offset
+        else:
+            assert direction == PktDirection.server_to_client
+            if server_sequence_offset is None:
+                server_sequence_offset = tcp_pkt.seq
+            relative_offset_seq = tcp_pkt.seq - server_sequence_offset
+
+    # If this TCP packet has the Ack set, then it must have an ack number
+        if 'A' not in str(tcp_pkt.flags):
+            relative_offset_ack = 0
+        else:
+            if direction == PktDirection.client_to_server:
+                relative_offset_ack = tcp_pkt.ack - server_sequence_offset
+            else:
+                relative_offset_ack = tcp_pkt.ack - client_sequence_offset
+        
+    # Determine the TCP payload length, IP fragment will not work with this logic so
+    # this is just a simple if-check to confirm that the packet is unfragmented
+    # otherwise display warning to user
+
+        if(ip_pkt.flags == 'MF') or (ip_pkt.frag != 0):
+            print('No support for fragmented IP packets')
+            break
+
+        tcp_payload_len = ip_pkt.len - (ip_pkt.ihl * 4) - (tcp_pkt.dataofs * 4)
+
+        fmt = '[{ordnl:>5}]{ts:>10.6f}s flag={flag:<3s} seq={seq:<9d} \
+        ack={ack:<9d} len={len:<6d}'
+        if direction == PktDirection.client_to_server:
+            fmt = '{arrow}' + fmt
+            arr = '-->'
+        else:
+            fmt = '{arrow:>69}' + fmt
+            arr = '<--'
+
+        print(fmt.format(arrow = arr,
+                         ordnl = last_pkt_ordinal,
+                         ts = this_pkt_relative_timestamp / pkt_metadata.tsresol,
+                         flag = str(tcp_pkt.flags),
+                         seq = relative_offset_seq,
+                         ack = relative_offset_ack,
+                         len = tcp_payload_len))
 
     print(
         "{} contains {} packets ({} interesting)".format(
